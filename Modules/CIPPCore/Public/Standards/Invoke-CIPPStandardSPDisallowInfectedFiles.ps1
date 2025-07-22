@@ -31,9 +31,15 @@ function Invoke-CIPPStandardSPDisallowInfectedFiles {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'SPDisallowInfectedFiles' -TenantFilter $Tenant -RequiredCapabilities @('SHAREPOINTWAC', 'SHAREPOINTSTANDARD', 'SHAREPOINTENTERPRISE', 'ONEDRIVE_BASIC', 'ONEDRIVE_ENTERPRISE')
+
+    if ($TestResult -eq $false) {
+        Write-Host "We're exiting as the correct license is not present for this standard."
+        return $true
+    } #we're done.
 
     $CurrentState = Get-CIPPSPOTenant -TenantFilter $Tenant |
-        Select-Object -Property DisallowInfectedFileDownload
+        Select-Object -Property _ObjectIdentity_, TenantFilter, DisallowInfectedFileDownload
 
     $StateIsCorrect = ($CurrentState.DisallowInfectedFileDownload -eq $true)
 
@@ -46,7 +52,7 @@ function Invoke-CIPPStandardSPDisallowInfectedFiles {
             }
 
             try {
-                Get-CIPPSPOTenant -TenantFilter $Tenant | Set-CIPPSPOTenant -Properties $Properties
+                $CurrentState | Set-CIPPSPOTenant -Properties $Properties
                 Write-LogMessage -API 'Standards' -tenant $tenant -Message 'Successfully disallowed downloading SharePoint infected files.' -Sev Info
             } catch {
                 $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
@@ -59,7 +65,9 @@ function Invoke-CIPPStandardSPDisallowInfectedFiles {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -tenant $tenant -Message 'Downloading SharePoint infected files are disallowed.' -Sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -Message 'Downloading SharePoint infected files are allowed.' -Sev Alert
+            $Message = 'Downloading SharePoint infected files is not set to the desired value.'
+            Write-StandardsAlert -message $Message -object $CurrentState -tenant $Tenant -standardName 'SPDisallowInfectedFiles' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $tenant -Message $Message -Sev Alert
         }
     }
 

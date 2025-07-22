@@ -7,6 +7,7 @@ function New-CIPPCAPolicy {
         $State,
         $Overwrite,
         $ReplacePattern = 'none',
+        $DisableSD = $false,
         $APIName = 'Create CA Policy',
         $Headers
     )
@@ -117,9 +118,9 @@ function New-CIPPCAPolicy {
         }
     }
 
-
     #for each of the locations, check if they exist, if not create them. These are in $jsonobj.LocationInfo
     $LocationLookupTable = foreach ($locations in $jsonobj.LocationInfo) {
+        if (!$locations) { continue }
         foreach ($location in $locations) {
             if (!$location.displayName) { continue }
             $CheckExististing = New-GraphGETRequest -uri 'https://graph.microsoft.com/beta/identity/conditionalAccess/namedLocations' -tenantid $TenantFilter -asApp $true
@@ -134,6 +135,14 @@ function New-CIPPCAPolicy {
                 if ($location.countriesAndRegions) { $location.countriesAndRegions = @($location.countriesAndRegions) }
                 $Body = ConvertTo-Json -InputObject $Location
                 $GraphRequest = New-GraphPOSTRequest -uri 'https://graph.microsoft.com/beta/identity/conditionalAccess/namedLocations' -body $body -Type POST -tenantid $tenantfilter -asApp $true
+                $retryCount = 0
+                do {
+                    Write-Host "Checking for location $($GraphRequest.id) attempt $retryCount. $TenantFilter"
+                    $LocationRequest = New-GraphGETRequest -uri 'https://graph.microsoft.com/beta/identity/conditionalAccess/namedLocations' -tenantid $tenantfilter -asApp $true | Where-Object -Property id -EQ $GraphRequest.id
+                    Write-Host "LocationRequest: $($LocationRequest.id)"
+                    Start-Sleep -Seconds 2
+                    $retryCount++
+                } while ((!$LocationRequest -or !$LocationRequest.id) -and ($retryCount -lt 5))
                 Write-LogMessage -Headers $User -API $APINAME -message "Created new Named Location: $($location.displayName)" -Sev 'Info'
                 [pscustomobject]@{
                     id   = $GraphRequest.id
@@ -217,7 +226,13 @@ function New-CIPPCAPolicy {
             }
         }
     }
-
+    if ($DisableSD -eq $true) {
+        #Send request to disable security defaults.
+        $body = '{ "isEnabled": false }'
+        $null = New-GraphPostRequest -tenantid $tenant -Uri 'https://graph.microsoft.com/beta/policies/identitySecurityDefaultsEnforcementPolicy' -Type patch -Body $body -ContentType 'application/json'
+        Write-LogMessage -Headers $User -API $APINAME -tenant $($Tenant) -message "Disabled Security Defaults for tenant $($TenantFilter)" -Sev 'Info'
+        Start-Sleep 3
+    }
     $RawJSON = ConvertTo-Json -InputObject $JSONObj -Depth 10 -Compress
     Write-Information $RawJSON
     try {
@@ -225,7 +240,7 @@ function New-CIPPCAPolicy {
         $CheckExististing = New-GraphGETRequest -uri 'https://graph.microsoft.com/beta/identity/conditionalAccess/policies' -tenantid $TenantFilter -asApp $true | Where-Object -Property displayName -EQ $displayname
         if ($CheckExististing) {
             if ($Overwrite -ne $true) {
-                Throw "Conditional Access Policy with Display Name $($Displayname) Already exists"
+                throw "Conditional Access Policy with Display Name $($Displayname) Already exists"
                 return $false
             } else {
                 Write-Information "overwriting $($CheckExististing.id)"
@@ -236,8 +251,7 @@ function New-CIPPCAPolicy {
         } else {
             Write-Information 'Creating'
             if ($JSONobj.GrantControls.authenticationStrength.policyType -or $JSONObj.$jsonobj.LocationInfo) {
-                #quick fix for if the policy isn't available
-                Start-Sleep 1
+                Start-Sleep 3
             }
             $null = New-GraphPOSTRequest -uri 'https://graph.microsoft.com/beta/identity/conditionalAccess/policies' -tenantid $tenantfilter -type POST -body $RawJSON -asApp $true
             Write-LogMessage -Headers $User -API $APINAME -tenant $($Tenant) -message "Added Conditional Access Policy $($JSONObj.Displayname)" -Sev 'Info'
